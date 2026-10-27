@@ -171,7 +171,8 @@ function bb(w,h,d,b,col){
   s.moveTo(-x,-y);s.lineTo(x,-y);s.lineTo(x,y);s.lineTo(-x,y);s.closePath();
   const g=new T.ExtrudeGeometry(s,{depth:Math.max(d-2*b,.001),bevelEnabled:true,bevelThickness:b,bevelSize:b,bevelSegments:1,steps:1});
   g.translate(0,0,-(d-2*b)/2);
-  return new T.Mesh(g,new T.MeshLambertMaterial({color:col,flatShading:true}));
+  const fg=g.toNonIndexed();fg.computeVertexNormals();g.dispose();   // normais planas (Lambert r128 não tem flatShading)
+  return new T.Mesh(fg,new T.MeshLambertMaterial({color:col}));
 }
 const GOLD=0xe0b84a,SK=0xf2c29b,WHT=0xf4f0e6;
 function makeFighter(pal,fwd){
@@ -275,7 +276,7 @@ R.setPixelRatio(Math.min(devicePixelRatio,2));
 const S=new T.Scene(),C=new T.PerspectiveCamera(40,1,.1,100);
 S.add(new T.HemisphereLight(0xfff2dd,0x6a7a80,.95));
 const dl=new T.DirectionalLight(0xffffff,1);dl.position.set(4,8,5);S.add(dl);
-const gr=new T.Mesh(new T.CylinderGeometry(6,6,.15,10),new T.MeshLambertMaterial({color:0xc9b27c,flatShading:true}));gr.position.y=-.08;S.add(gr);
+const gr=new T.Mesh((()=>{const g=new T.CylinderGeometry(6,6,.15,10).toNonIndexed();g.computeVertexNormals();return g})(),new T.MeshLambertMaterial({color:0xc9b27c}));gr.position.y=-.08;S.add(gr);
 MV.clash={n:'',d:.55,step:-.2,k:[[0,{}],[.14,{sx:-1.7,sz:1.1,ex:-.5,wx:.5,tx:-.3,dz:-.25,lhx:.5,osz:-1},'o'],[.6,{dz:-.2}],[1,{dz:-.2}]]};
 
 /* --- som (WebAudio, sem arquivos) --- */
@@ -546,9 +547,24 @@ function step(f,dt,t){
    Host = simulação autoritativa. Convidado = envia comandos e recebe snapshots (20 Hz) + eventos.
    O convidado joga com o lutador dele sempre à esquerda (mesma tela/botões do modo solo). */
 const PEER_SRC=['https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js','https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js'];
-const ICE=[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'}
- /* Redes restritivas (4G/CGNAT, firewall corporativo) precisam de TURN. Adicione o seu aqui:
- ,{urls:'turn:SEU_SERVIDOR:443',username:'USUARIO',credential:'SENHA'} */];
+/* ---- TURN (obrigatório p/ redes 4G/CGNAT e firewalls) ----
+   Os servidores 'openrelayproject' públicos foram descontinuados: agora é preciso uma conta grátis.
+   1) Crie conta em https://dashboard.metered.ca/signup  2) Dashboard > TURN Server > crie um credential
+   3) Preencha abaixo o nome do app (parte antes de .metered.live) e a API Key (apiKey, NÃO a secretKey). */
+const METERED_APP='';   // ex.: 'meujogo'
+const METERED_KEY='';   // ex.: 'a1b2c3...'
+/* Alternativa sem API: cole aqui servidores fixos de qualquer provedor (ExpressTURN, Metered, coturn próprio...):
+   {urls:'turn:HOST:3478',username:'USER',credential:'PASS'}, {urls:'turn:HOST:443?transport=tcp',username:'USER',credential:'PASS'} */
+const TURN_FIXO=[];
+let ICE=[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'}].concat(TURN_FIXO);
+let HAS_TURN=TURN_FIXO.length>0;
+async function loadIce(){
+  if(!METERED_APP||!METERED_KEY)return;
+  try{const c=new AbortController(),t=setTimeout(()=>c.abort(),6000);
+    const r=await fetch('https://'+METERED_APP+'.metered.live/api/v1/turn/credentials?apiKey='+METERED_KEY,{signal:c.signal});clearTimeout(t);
+    if(!r.ok)throw new Error(r.status);const l=await r.json();
+    if(Array.isArray(l)&&l.length){ICE=ICE.concat(l);HAS_TURN=true}}
+  catch(e){console.warn('Falha ao obter credenciais TURN',e)}}
 const PFX='duelopiratas-',CH='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const PH={coat:0x8a2433,sash:0x2c4b78,pa:0xb59a6a,hair:0x4a2f20,hat:'tri'};   // jogador 1 (host)
 const PG={coat:0x24406b,sash:0xe0b84a,pa:0xe9e2cc,hair:0x1d1d22,hat:'band'};   // jogador 2 (convidado)
@@ -577,10 +593,10 @@ function mpMenu(msg){mpTeardown();
 async function mpHostStart(){
   mpScreen('<h2>Criando sala…</h2>');
   try{await loadPeer()}catch(e){return mpMenu('Não foi possível carregar a biblioteca P2P (PeerJS). Verifique sua conexão.')}
-  mpIsHost=true;mkHost(0)}
+  await loadIce();mpIsHost=true;mkHost(0)}
 function mkHost(n){
   mpCode=Array.from({length:5},()=>CH[Math.random()*CH.length|0]).join('');
-  const p=peer=new Peer(PFX+mpCode,{config:{iceServers:ICE}});
+  const p=peer=new Peer(PFX+mpCode,{config:{iceServers:ICE,iceCandidatePoolSize:4}});
   p.on('open',()=>{if(peer!==p)return;const link=location.origin+location.pathname+'?sala='+mpCode;
     mpScreen('<h2>Sala criada</h2><p class="sm">Passe o código (ou o link) para o seu rival:</p><p class="code">'+mpCode+'</p><p class="sm" style="word-break:break-all">'+link+'</p><p><button id="mpCopy">Copiar link</button></p><p class="sm">Aguardando o rival entrar…</p><button id="mpBack">Cancelar</button>')});
   p.on('connection',c=>{if(peer!==p)return;if(conn){c.close();return}conn=c;setupConn()});
@@ -589,9 +605,9 @@ async function mpJoin(code){
   code=(code||'').toUpperCase().replace(/[^A-Z0-9]/g,'');if(code.length!=5)return mpMenu('Código inválido (5 caracteres).');
   mpScreen('<h2>Conectando…</h2><p class="sm">Sala '+code+'</p><button id="mpBack">Cancelar</button>');
   try{await loadPeer()}catch(e){return mpMenu('Não foi possível carregar a biblioteca P2P (PeerJS). Verifique sua conexão.')}
-  mpIsHost=false;const p=peer=new Peer({config:{iceServers:ICE}});
+  await loadIce();mpIsHost=false;const p=peer=new Peer({config:{iceServers:ICE,iceCandidatePoolSize:4}});
   p.on('open',()=>{if(peer!==p)return;conn=p.connect(PFX+code,{reliable:true,serialization:'json'});setupConn();
-    mpTmo=setTimeout(()=>{if(peer===p&&(!conn||!conn.open))mpMenu('Tempo esgotado. Sua rede pode exigir um servidor TURN.')},15000)});
+    mpTmo=setTimeout(()=>{if(peer===p&&(!conn||!conn.open))mpMenu(HAS_TURN?'Tempo esgotado. Verifique VPN/bloqueio de WebRTC e tente de novo.':'Tempo esgotado: falta configurar o servidor TURN (METERED_APP/METERED_KEY no código).')},30000)});
   p.on('error',e=>{if(peer===p)mpMenu(errTxt(e))})}
 function setupConn(){const c=conn,op=()=>{if(conn!==c)return;clearTimeout(mpTmo);mpConnected()};
   if(c.open)op();else c.on('open',op);
